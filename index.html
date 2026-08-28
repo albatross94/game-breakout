@@ -1,0 +1,286 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>벽돌깨기</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body {
+    background: #0a0a0f;
+    color: #f0ede8;
+    font-family: -apple-system, "Segoe UI", "Malgun Gothic", sans-serif;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+  }
+  #wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+  }
+  #hud {
+    display: flex;
+    gap: 24px;
+    font-size: 15px;
+    font-variant-numeric: tabular-nums;
+  }
+  #hud span { color: #a8a8b0; }
+  #hud b { color: #ff6b4a; }
+  canvas {
+    background: #14141a;
+    border-radius: 12px;
+    box-shadow: 0 0 0 1px #2a2a32, 0 20px 60px rgba(0,0,0,0.5);
+  }
+  #overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(10,10,15,0.88);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    text-align: center;
+  }
+  #overlay.hidden { display: none; }
+  #overlay h1 { font-size: 28px; }
+  #overlay p { color: #a8a8b0; font-size: 14px; max-width: 320px; }
+  #overlay button {
+    background: #ff6b4a;
+    color: #1a0f0a;
+    border: none;
+    padding: 12px 28px;
+    border-radius: 12px;
+    font-size: 15px;
+    font-weight: 700;
+    cursor: pointer;
+  }
+  #hint { color: #6a6a72; font-size: 12px; }
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="hud">
+    <span>점수 <b id="scoreEl">0</b></span>
+    <span>목숨 <b id="livesEl">3</b></span>
+    <span>레벨 <b id="levelEl">1</b></span>
+  </div>
+  <canvas id="game" width="480" height="560"></canvas>
+  <div id="hint">← → 방향키 또는 마우스로 패들 이동 · Space로 시작/일시정지</div>
+</div>
+
+<div id="overlay">
+  <h1>🧱 벽돌깨기</h1>
+  <p>방향키나 마우스로 패들을 움직여 공을 튕겨내고 모든 벽돌을 깨보세요.</p>
+  <button id="startBtn">시작하기</button>
+</div>
+
+<script>
+(function () {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width, H = canvas.height;
+
+  const scoreEl = document.getElementById('scoreEl');
+  const livesEl = document.getElementById('livesEl');
+  const levelEl = document.getElementById('levelEl');
+  const overlay = document.getElementById('overlay');
+  const startBtn = document.getElementById('startBtn');
+
+  const PADDLE_W = 90, PADDLE_H = 12;
+  const BALL_R = 7;
+  const BRICK_ROWS = 5, BRICK_COLS = 8;
+  const BRICK_PAD = 6, BRICK_TOP = 50, BRICK_H = 20;
+  const BRICK_W = (W - BRICK_PAD * (BRICK_COLS + 1)) / BRICK_COLS;
+
+  let paddleX = W / 2 - PADDLE_W / 2;
+  let ballX, ballY, ballDX, ballDY;
+  let score = 0, lives = 3, level = 1;
+  let bricks = [];
+  let running = false;
+  let rightDown = false, leftDown = false;
+
+  const rowColors = ['#ff6b4a', '#ffb84a', '#4ade80', '#4ac9de', '#a78bfa'];
+
+  function initBricks() {
+    bricks = [];
+    for (let r = 0; r < BRICK_ROWS; r++) {
+      for (let c = 0; c < BRICK_COLS; c++) {
+        bricks.push({
+          x: BRICK_PAD + c * (BRICK_W + BRICK_PAD),
+          y: BRICK_TOP + r * (BRICK_H + BRICK_PAD),
+          alive: true,
+          color: rowColors[r % rowColors.length]
+        });
+      }
+    }
+  }
+
+  function resetBall() {
+    ballX = W / 2;
+    ballY = H - 80;
+    const speed = 4.2 + (level - 1) * 0.5;
+    const angle = (Math.random() * 0.6 + 0.2) * Math.PI;
+    ballDX = speed * Math.cos(angle) * (Math.random() < 0.5 ? 1 : -1);
+    ballDY = -Math.abs(speed * Math.sin(angle));
+  }
+
+  function resetGame(full) {
+    if (full) {
+      score = 0; lives = 3; level = 1;
+      initBricks();
+    }
+    paddleX = W / 2 - PADDLE_W / 2;
+    resetBall();
+    updateHud();
+  }
+
+  function updateHud() {
+    scoreEl.textContent = score;
+    livesEl.textContent = lives;
+    levelEl.textContent = level;
+  }
+
+  function drawPaddle() {
+    ctx.fillStyle = '#f0ede8';
+    ctx.beginPath();
+    ctx.roundRect(paddleX, H - 30, PADDLE_W, PADDLE_H, 6);
+    ctx.fill();
+  }
+
+  function drawBall() {
+    ctx.beginPath();
+    ctx.arc(ballX, ballY, BALL_R, 0, Math.PI * 2);
+    ctx.fillStyle = '#ff6b4a';
+    ctx.shadowColor = '#ff6b4a';
+    ctx.shadowBlur = 10;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+  }
+
+  function drawBricks() {
+    bricks.forEach(b => {
+      if (!b.alive) return;
+      ctx.fillStyle = b.color;
+      ctx.beginPath();
+      ctx.roundRect(b.x, b.y, BRICK_W, BRICK_H, 4);
+      ctx.fill();
+    });
+  }
+
+  function collideBricks() {
+    for (const b of bricks) {
+      if (!b.alive) continue;
+      if (ballX + BALL_R > b.x && ballX - BALL_R < b.x + BRICK_W &&
+          ballY + BALL_R > b.y && ballY - BALL_R < b.y + BRICK_H) {
+        b.alive = false;
+        score += 10;
+        updateHud();
+        const overlapLeft = (ballX + BALL_R) - b.x;
+        const overlapRight = (b.x + BRICK_W) - (ballX - BALL_R);
+        const overlapTop = (ballY + BALL_R) - b.y;
+        const overlapBottom = (b.y + BRICK_H) - (ballY - BALL_R);
+        const minH = Math.min(overlapLeft, overlapRight);
+        const minV = Math.min(overlapTop, overlapBottom);
+        if (minH < minV) ballDX = -ballDX; else ballDY = -ballDY;
+        break;
+      }
+    }
+    if (bricks.every(b => !b.alive)) {
+      level++;
+      initBricks();
+      resetBall();
+      updateHud();
+    }
+  }
+
+  function loop() {
+    if (!running) return;
+    ctx.clearRect(0, 0, W, H);
+
+    if (rightDown) paddleX = Math.min(W - PADDLE_W, paddleX + 7);
+    if (leftDown) paddleX = Math.max(0, paddleX - 7);
+
+    ballX += ballDX;
+    ballY += ballDY;
+
+    if (ballX - BALL_R < 0) { ballX = BALL_R; ballDX = -ballDX; }
+    if (ballX + BALL_R > W) { ballX = W - BALL_R; ballDX = -ballDX; }
+    if (ballY - BALL_R < 0) { ballY = BALL_R; ballDY = -ballDY; }
+
+    if (ballY + BALL_R > H - 30 && ballY + BALL_R < H - 30 + PADDLE_H + 8 &&
+        ballX > paddleX && ballX < paddleX + PADDLE_W && ballDY > 0) {
+      const hitPos = (ballX - (paddleX + PADDLE_W / 2)) / (PADDLE_W / 2);
+      const speed = Math.hypot(ballDX, ballDY);
+      const angle = hitPos * (Math.PI / 3);
+      ballDX = speed * Math.sin(angle);
+      ballDY = -Math.abs(speed * Math.cos(angle));
+    }
+
+    if (ballY - BALL_R > H) {
+      lives--;
+      updateHud();
+      if (lives <= 0) {
+        running = false;
+        showOverlay('게임 오버', `최종 점수: ${score}`, '다시 시작');
+        return;
+      }
+      paddleX = W / 2 - PADDLE_W / 2;
+      resetBall();
+    }
+
+    collideBricks();
+    drawBricks();
+    drawPaddle();
+    drawBall();
+
+    requestAnimationFrame(loop);
+  }
+
+  function showOverlay(title, desc, btnText) {
+    overlay.querySelector('h1').textContent = title;
+    overlay.querySelector('p').textContent = desc;
+    startBtn.textContent = btnText;
+    overlay.classList.remove('hidden');
+  }
+
+  startBtn.addEventListener('click', () => {
+    overlay.classList.add('hidden');
+    resetGame(true);
+    running = true;
+    requestAnimationFrame(loop);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'ArrowRight') rightDown = true;
+    if (e.key === 'ArrowLeft') leftDown = true;
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (overlay.classList.contains('hidden')) {
+        running = !running;
+        if (running) requestAnimationFrame(loop);
+      }
+    }
+  });
+  document.addEventListener('keyup', (e) => {
+    if (e.key === 'ArrowRight') rightDown = false;
+    if (e.key === 'ArrowLeft') leftDown = false;
+  });
+
+  canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    const scale = W / rect.width;
+    const x = (e.clientX - rect.left) * scale;
+    paddleX = Math.min(W - PADDLE_W, Math.max(0, x - PADDLE_W / 2));
+  });
+
+  initBricks();
+  updateHud();
+})();
+</script>
+</body>
+</html>
